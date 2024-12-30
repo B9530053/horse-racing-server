@@ -1,194 +1,472 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-Hant">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Horse Racing Multiplayer</title>
-    <style>
-        body {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background-color: #87CEEB;
-            overflow: hidden;
-        }
-        canvas {
-            border: 1px solid black;
-            background-color: white;
-        }
-        button {
-            padding: 10px 20px;
-            font-size: 16px;
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>馬匹閃避障礙競賽 - 虛擬搖桿版</title>
+  <style>
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      background-color: #f4f4f4;
+      touch-action: none; /* 避免瀏覽器預設的上下捲動、縮放行為干擾 */
+    }
+    canvas {
+      border: 1px solid black;
+      background-color: white;
+      touch-action: none; /* 重要：讓 Canvas 上能偵測 touchmove */
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    #playerSelection {
+      margin-bottom: 20px;
+    }
+  </style>
 </head>
 <body>
-    <!-- 選擇玩家 -->
-    <div id="playerSelection" style="margin-bottom: 20px;">
-        <button class="playerButton" data-player="0" style="background-color: hsl(0, 70%, 50%);">Player 1</button>
-        <button class="playerButton" data-player="1" style="background-color: hsl(50, 70%, 50%);">Player 2</button>
-        <button class="playerButton" data-player="2" style="background-color: hsl(100, 70%, 50%);">Player 3</button>
-        <button class="playerButton" data-player="3" style="background-color: hsl(150, 70%, 50%);">Player 4</button>
-    </div>
-    <!-- 畫布 -->
-    <canvas id="myCanvas" width="800" height="400"></canvas>
-    <!-- Restart 按鈕 -->
-    <button id="restartButton" style="display: none; margin-top: 20px;">Restart</button>
+  <!-- 玩家選擇 -->
+  <div id="playerSelection">
+    <button class="playerButton" data-player="0" style="background-color: hsl(0, 70%, 50%);">玩家 1</button>
+    <button class="playerButton" data-player="1" style="background-color: hsl(50, 70%, 50%);">玩家 2</button>
+    <button class="playerButton" data-player="2" style="background-color: hsl(100, 70%, 50%);">玩家 3</button>
+    <button class="playerButton" data-player="3" style="background-color: hsl(150, 70%, 50%);">玩家 4</button>
+  </div>
 
-    <script>
-        // 初始化 WebSocket
-        const socket = new WebSocket('ws://localhost:8080');
+  <!-- 遊戲畫布 -->
+  <canvas id="myCanvas" width="800" height="400"></canvas>
 
-        socket.onopen = () => {
-            console.log('Connected to the WebSocket server');
-        };
+  <!-- 重新開始按鈕 -->
+  <button id="restartButton" style="display: none; margin-top: 20px;">重新開始</button>
 
-        socket.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.type === 'update') {
-                horses[data.player].x = data.position;
-                horses[data.player].speed = data.speed;
+  <script>
+    /********************************************
+     * A. 圓形 vs. 矩形的精準碰撞判斷函式         *
+     ********************************************/
+    function circleRectCollision(cx, cy, r, rx, ry, rw, rh) {
+      let testX = cx;
+      let testY = cy;
+
+      // 判斷 X 方向
+      if (cx < rx) {
+        testX = rx;
+      } else if (cx > rx + rw) {
+        testX = rx + rw;
+      }
+
+      // 判斷 Y 方向
+      if (cy < ry) {
+        testY = ry;
+      } else if (cy > ry + rh) {
+        testY = ry + rh;
+      }
+
+      const distX = cx - testX;
+      const distY = cy - testY;
+      const distance = Math.sqrt(distX * distX + distY * distY);
+      return distance <= r;
+    }
+
+    /********************************************
+     * B. 全域變數                              *
+     ********************************************/
+    const canvas = document.getElementById('myCanvas');
+    const ctx = canvas.getContext('2d');
+    const restartButton = document.getElementById('restartButton');
+    const playerButtons = document.querySelectorAll('.playerButton');
+
+    // 跑道設定
+    const trackCount = 4;
+    const laneHeight = canvas.height / trackCount;
+
+    // 馬匹屬性
+    const HORSE_RADIUS = 15; // 馬匹圓形半徑
+
+    // 初始障礙物參數 (會隨難度調整)
+    let OBSTACLE_SIZE = 20;   // 障礙物寬度與高度
+    let OBSTACLE_SPEED_MIN = 2; // 障礙物最小速度
+    let OBSTACLE_SPEED_MAX = 6; // 障礙物最大速度
+    let OBSTACLE_SPAWN_RATE = 0.01; // 初始障礙物生成機率 (1%)
+
+    // 遊戲控制旗標
+    let gameOver = false;
+    let controlledPlayer = null; // 用來記錄被選擇的玩家編號
+
+    // 馬匹資料結構
+    const horses = Array.from({ length: trackCount }, (_, i) => ({
+      x: 100,
+      y: i * laneHeight + laneHeight / 2,
+      color: `hsl(${i * 50}, 70%, 50%)`,
+      lives: 3,
+      alive: true,
+      collisionCooldown: 0, // 撞到後的無敵幀數
+      vx: 0, // x 方向速度(由搖桿決定)
+      vy: 0  // y 方向速度(由搖桿決定)
+    }));
+
+    // 障礙物陣列
+    const obstacles = [];
+
+    // 難度相關
+    let difficultyLevel = 1;
+    let lastDifficultyIncreaseTime = 0; // 上次提升難度的時間 (ms)
+    const DIFFICULTY_INTERVAL = 10000;  // 每 10 秒升級一次難度
+
+    // 虛擬搖桿相關
+    let joystickActive = false;     // 是否正在操作搖桿
+    let joystickCenter = null;      // 搖桿中心點 {x, y}
+    let currentTouchID = null;      // 記錄哪隻手指正在操作搖桿
+    const JOYSTICK_MAX_RADIUS = 50; // 搖桿的最大半徑(可自行調整)
+    const HORSE_MAX_SPEED = 5;      // 馬匹可移動的最大速度(可自行調整)
+
+    /********************************************
+     * C. 初始化畫面/函式                       *
+     ********************************************/
+    // 繪製跑道
+    function drawTracks() {
+      for (let i = 0; i < trackCount; i++) {
+        ctx.fillStyle = i % 2 === 0 ? 'white' : 'darkgray';
+        ctx.fillRect(0, i * laneHeight, canvas.width, laneHeight);
+      }
+    }
+
+    // 繪製馬匹
+    function drawHorses() {
+      horses.forEach((horse) => {
+        if (horse.alive) {
+          ctx.fillStyle = horse.color;
+          ctx.beginPath();
+          ctx.arc(horse.x, horse.y, HORSE_RADIUS, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 顯示生命
+          ctx.fillStyle = 'black';
+          ctx.font = '12px Arial';
+          ctx.fillText(`生命: ${horse.lives}`, horse.x - 25, horse.y - HORSE_RADIUS - 5);
+        }
+      });
+    }
+
+    // 繪製障礙物
+    function drawObstacles() {
+      ctx.fillStyle = 'red';
+      obstacles.forEach((obs) => {
+        ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+      });
+    }
+
+    // 【除錯用】可視化碰撞範圍
+    function debugCollisionAreas() {
+      // 馬匹 - 藍色圓形邊
+      horses.forEach((horse) => {
+        if (!horse.alive) return;
+        ctx.strokeStyle = 'blue';
+        ctx.beginPath();
+        ctx.arc(horse.x, horse.y, HORSE_RADIUS, 0, 2 * Math.PI);
+        ctx.stroke();
+      });
+
+      // 障礙物 - 綠色方框邊
+      ctx.strokeStyle = 'green';
+      obstacles.forEach((obs) => {
+        ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
+      });
+
+      // 搖桿 - 畫出中心與手指位置 (以粉紅色呈現)
+      if (joystickActive && joystickCenter) {
+        ctx.strokeStyle = 'magenta';
+        ctx.beginPath();
+        ctx.arc(joystickCenter.x, joystickCenter.y, 10, 0, 2 * Math.PI);
+        ctx.stroke();
+      }
+    }
+
+    /********************************************
+     * D. 遊戲邏輯：障礙物更新、碰撞、結束判定   *
+     ********************************************/
+    // 生成障礙物 (速度隨機)
+    function generateObstacle() {
+      const lane = Math.floor(Math.random() * trackCount);
+      const randomSpeed = Math.random() * (OBSTACLE_SPEED_MAX - OBSTACLE_SPEED_MIN) + OBSTACLE_SPEED_MIN;
+
+      const obs = {
+        width: OBSTACLE_SIZE,
+        height: OBSTACLE_SIZE,
+        x: canvas.width,
+        y: lane * laneHeight + (laneHeight / 2) - (OBSTACLE_SIZE / 2),
+        speed: randomSpeed
+      };
+      obstacles.push(obs);
+    }
+
+    // 更新障礙物位置
+    function updateObstacles() {
+      obstacles.forEach((obs) => {
+        obs.x -= obs.speed;
+      });
+      // 移除已超出左邊畫面的障礙物
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        if (obstacles[i].x + obstacles[i].width < 0) {
+          obstacles.splice(i, 1);
+        }
+      }
+    }
+
+    // 碰撞檢測
+    function checkCollisions() {
+      horses.forEach((horse) => {
+        if (!horse.alive) return;
+
+        // 若還在無敵狀態，跳過
+        if (horse.collisionCooldown > 0) {
+          horse.collisionCooldown--;
+          return;
+        }
+
+        obstacles.forEach((obs) => {
+          const isCollide = circleRectCollision(
+            horse.x, horse.y, HORSE_RADIUS,
+            obs.x, obs.y, obs.width, obs.height
+          );
+          if (isCollide) {
+            // 扣血
+            horse.lives--;
+            if (horse.lives <= 0) {
+              horse.alive = false;
             }
-        };
-
-        socket.onerror = (error) => {
-            console.error('WebSocket Error:', error);
-        };
-
-        socket.onclose = () => {
-            console.log('Disconnected from the WebSocket server');
-        };
-
-        const canvas = document.getElementById('myCanvas');
-        const ctx = canvas.getContext('2d');
-        const restartButton = document.getElementById('restartButton');
-        const playerButtons = document.querySelectorAll('.playerButton');
-        const trackCount = 4; // 玩家數量
-        const laneHeight = canvas.height / trackCount;
-        let gameOver = false; // 遊戲狀態
-        let controlledPlayer = null; // 被控制的玩家
-
-        const background = {
-            x: 0,
-            speed: 2
-        };
-
-        // 初始化賽馬數據
-        const horses = Array.from({ length: trackCount }, (_, i) => ({
-            x: 20, // 初始位置
-            y: i * laneHeight + laneHeight / 2, // 每條跑道的中心
-            color: `hsl(${i * 50}, 70%, 50%)`, // 每匹馬不同顏色
-            speed: Math.random() * 1 + 1, // 初始速度
-            image: new Image()
-        }));
-
-        horses.forEach((horse, index) => {
-            horse.image.src = `horse${index + 1}.png`; // 動態馬匹圖片（需提供圖片文件）
+            // 進入無敵狀態 (避免壓在同一障礙物連續扣血)
+            horse.collisionCooldown = 30;
+          }
         });
+      });
+    }
 
-        // 玩家選擇
-        playerButtons.forEach(button => {
-            button.addEventListener('click', () => {
-                controlledPlayer = parseInt(button.dataset.player, 10); // 獲取玩家編號
-                document.getElementById('playerSelection').style.display = 'none'; // 隱藏選擇
-                console.log(`Player ${controlledPlayer + 1} selected`);
-                gameLoop(); // 開始遊戲
-            });
-        });
+    // 檢查遊戲是否結束
+    function checkGameOver() {
+      const aliveHorses = horses.filter(h => h.alive);
+      if (aliveHorses.length <= 1) {
+        gameOver = true;
+        const winner = aliveHorses[0];
+        announceWinner(winner);
+      }
+    }
 
-        // 點擊屏幕加速
-        canvas.addEventListener('click', () => {
-            if (controlledPlayer !== null) {
-                horses[controlledPlayer].speed = Math.min(horses[controlledPlayer].speed + 1, 5); // 限速
-                console.log(`Player ${controlledPlayer + 1} accelerated`);
-                socket.send(JSON.stringify({
-                    type: 'action',
-                    player: controlledPlayer,
-                    action: 'accelerate'
-                }));
-            }
-        });
+    // 公布勝利者
+    function announceWinner(winner) {
+      ctx.fillStyle = 'black';
+      ctx.font = '30px Arial';
+      const message = winner ? `贏家：${winner.color} 馬匹` : '沒有勝利者';
+      ctx.fillText(message, 10, 50);
+      restartButton.style.display = 'block';
+    }
 
-        // 繪製背景
-        function drawBackground() {
-            ctx.fillStyle = '#87CEEB'; // 天藍色背景
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.fillStyle = '#228B22'; // 草地顏色
-            ctx.fillRect(0, canvas.height - 50, canvas.width, 50);
+    /********************************************
+     * E. 重新開始與玩家選擇                     *
+     ********************************************/
+    // 重置遊戲
+    function resetGame() {
+      gameOver = false;
+      restartButton.style.display = 'none';
 
-            // 模擬背景移動
-            background.x -= background.speed;
-            if (background.x <= -canvas.width) background.x = 0;
+      // 重置馬匹
+      horses.forEach((horse, i) => {
+        horse.x = 100;
+        horse.y = i * laneHeight + laneHeight / 2;
+        horse.lives = 3;
+        horse.alive = true;
+        horse.collisionCooldown = 0;
+        horse.vx = 0;
+        horse.vy = 0;
+      });
 
-            ctx.fillStyle = '#32CD32';
-            ctx.fillRect(background.x, canvas.height - 50, canvas.width, 50);
-            ctx.fillRect(background.x + canvas.width, canvas.height - 50, canvas.width, 50);
+      // 重置障礙物
+      obstacles.length = 0;
+      controlledPlayer = null;
+      document.getElementById('playerSelection').style.display = 'block';
+
+      // 重置難度
+      difficultyLevel = 1;
+      OBSTACLE_SIZE = 20;
+      OBSTACLE_SPEED_MIN = 2;
+      OBSTACLE_SPEED_MAX = 6;
+      OBSTACLE_SPAWN_RATE = 0.01;
+      lastDifficultyIncreaseTime = 0;
+
+      // 清空畫面並重繪初始畫面
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawTracks();
+      drawHorses();
+    }
+
+    // 重新開始按鈕
+    restartButton.addEventListener('click', resetGame);
+
+    // 玩家選擇
+    playerButtons.forEach(button => {
+      button.addEventListener('click', () => {
+        controlledPlayer = parseInt(button.dataset.player, 10);
+        document.getElementById('playerSelection').style.display = 'none';
+        // 開始遊戲迴圈
+        requestAnimationFrame(gameLoop);
+      });
+    });
+
+    /********************************************
+     * F. 難度升級邏輯                           *
+     ********************************************/
+    function updateDifficulty(timestamp) {
+      if (lastDifficultyIncreaseTime === 0) {
+        lastDifficultyIncreaseTime = timestamp;
+      }
+
+      // 每 10 秒升級一次難度
+      if (timestamp - lastDifficultyIncreaseTime >= DIFFICULTY_INTERVAL) {
+        difficultyLevel++;
+        lastDifficultyIncreaseTime = timestamp;
+
+        // 升級後，讓障礙物更大、更快、更頻繁
+        OBSTACLE_SIZE += 2;
+        OBSTACLE_SPEED_MIN += 0.5;
+        OBSTACLE_SPEED_MAX += 0.5;
+        OBSTACLE_SPAWN_RATE += 0.002;
+
+        // 設一些上限
+        if (OBSTACLE_SPEED_MAX > 12) OBSTACLE_SPEED_MAX = 12;
+        if (OBSTACLE_SPAWN_RATE > 0.2) OBSTACLE_SPAWN_RATE = 0.2;
+
+        console.log(`難度提升到等級 ${difficultyLevel}！`);
+      }
+    }
+
+    /********************************************
+     * G. 虛擬搖桿邏輯 (touch事件)               *
+     ********************************************/
+    // 1) touchstart：記錄搖桿中心 & touch ID
+    canvas.addEventListener('touchstart', (e) => {
+      // 若已有手指在使用搖桿，就不再偵測其他手指
+      if (joystickActive) return;
+
+      const touch = e.touches[0];
+      joystickActive = true;
+      joystickCenter = { x: touch.clientX, y: touch.clientY };
+      currentTouchID = touch.identifier;
+    });
+
+    // 2) touchmove：計算手指與中心點的相對位置，換算成 vx, vy
+    canvas.addEventListener('touchmove', (e) => {
+      if (!joystickActive) return;
+
+      // 找到跟 currentTouchID 一樣的那根手指
+      let relevantTouch = null;
+      for (const t of e.touches) {
+        if (t.identifier === currentTouchID) {
+          relevantTouch = t;
+          break;
+        }
+      }
+      if (!relevantTouch) return;
+
+      // 計算相對位移
+      let dx = relevantTouch.clientX - joystickCenter.x;
+      let dy = relevantTouch.clientY - joystickCenter.y;
+
+      // 限制在搖桿最大半徑內
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > JOYSTICK_MAX_RADIUS) {
+        const angle = Math.atan2(dy, dx);
+        dx = JOYSTICK_MAX_RADIUS * Math.cos(angle);
+        dy = JOYSTICK_MAX_RADIUS * Math.sin(angle);
+      }
+
+      // 將 dx, dy 換算成 vx, vy (基於 HORSE_MAX_SPEED)
+      if (controlledPlayer !== null) {
+        const horse = horses[controlledPlayer];
+        // 距離 / JOYSTICK_MAX_RADIUS 大約是速度比例
+        const speedRatio = dist / JOYSTICK_MAX_RADIUS;
+        const speed = HORSE_MAX_SPEED * speedRatio;
+
+        const angle = Math.atan2(dy, dx);
+        horse.vx = speed * Math.cos(angle);
+        horse.vy = speed * Math.sin(angle);
+      }
+    });
+
+    // 3) touchend：若手指放開，停止移動
+    canvas.addEventListener('touchend', (e) => {
+      // 確認是否是同一根手指放開
+      for (const t of e.changedTouches) {
+        if (t.identifier === currentTouchID) {
+          joystickActive = false;
+          joystickCenter = null;
+          currentTouchID = null;
+          // 停止移動
+          if (controlledPlayer !== null) {
+            const horse = horses[controlledPlayer];
+            horse.vx = 0;
+            horse.vy = 0;
+          }
+        }
+      }
+    });
+
+    // 若需要支援多手指（只要第一指是搖桿），其餘手指可作其他功能：
+    // 可在 touchstart/touchend 中精細處理多指情境，這裡示範簡單單指。
+
+    /********************************************
+     * H. 遊戲主迴圈                            *
+     ********************************************/
+    function gameLoop(timestamp) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      drawTracks();
+      drawHorses();
+      drawObstacles();
+      debugCollisionAreas(); // 可視化碰撞區域（除錯用）
+
+      if (!gameOver) {
+        // 難度更新
+        updateDifficulty(timestamp);
+
+        // 更新馬匹位置 (根據 vx, vy)，並做邊界檢查
+        if (controlledPlayer !== null) {
+          const horse = horses[controlledPlayer];
+          // 移動
+          horse.x += horse.vx;
+          horse.y += horse.vy;
+
+          // 邊界限制：不可超出該跑道
+          // 跑道上邊界
+          const topLimit = laneHeight * controlledPlayer + HORSE_RADIUS;
+          // 跑道下邊界
+          const bottomLimit = laneHeight * (controlledPlayer + 1) - HORSE_RADIUS;
+          // 左右邊界
+          if (horse.x < HORSE_RADIUS) horse.x = HORSE_RADIUS;
+          if (horse.x > canvas.width - HORSE_RADIUS) horse.x = canvas.width - HORSE_RADIUS;
+          if (horse.y < topLimit) horse.y = topLimit;
+          if (horse.y > bottomLimit) horse.y = bottomLimit;
         }
 
-        // 繪製賽馬
-        function drawHorses() {
-            horses.forEach(horse => {
-                ctx.drawImage(horse.image, horse.x, horse.y - 25, 50, 50); // 使用圖片表示馬匹
-            });
+        updateObstacles();
+        checkCollisions();
+        checkGameOver();
+
+        // 隨機生成障礙物
+        if (Math.random() < OBSTACLE_SPAWN_RATE) {
+          generateObstacle();
         }
 
-        // 更新賽馬位置
-        function updateHorses() {
-            horses.forEach((horse, index) => {
-                if (!gameOver) {
-                    if (index !== controlledPlayer) {
-                        horse.speed = Math.max(1, horse.speed - 0.05); // 非玩家控制馬匹逐漸減速
-                    }
-                    horse.x += horse.speed; // 根據速度更新位置
-                    if (horse.x >= canvas.width - 50) {
-                        gameOver = true; // 設置遊戲結束
-                        announceWinner(horse); // 顯示獲勝馬匹
-                    }
-                }
-            });
-        }
+        requestAnimationFrame(gameLoop);
+      }
+    }
 
-        // 宣布獲勝者
-        function announceWinner(horse) {
-            ctx.fillStyle = "black";
-            ctx.font = "30px Arial";
-            ctx.fillText(`Winner: ${horse.color}`, 10, 50);
-            restartButton.style.display = "block"; // 顯示重新開始按鈕
-        }
-
-        // 重置遊戲狀態
-        function resetGame() {
-            gameOver = false;
-            restartButton.style.display = "none";
-            horses.forEach(horse => {
-                horse.x = 20;
-                horse.speed = Math.random() * 1 + 1;
-            });
-            controlledPlayer = null;
-            document.getElementById('playerSelection').style.display = 'block'; // 顯示選擇
-            drawBackground();
-            drawHorses();
-        }
-
-        // 為 Restart 按鈕添加點擊事件
-        restartButton.addEventListener('click', resetGame);
-
-        // 遊戲循環
-        function gameLoop() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height); // 清空畫布
-            drawBackground(); // 繪製背景
-            drawHorses(); // 繪製賽馬
-            updateHorses(); // 更新賽馬位置
-            if (!gameOver) {
-                requestAnimationFrame(gameLoop);
-            }
-        }
-
-        // 初始化畫面
-        drawBackground();
-        drawHorses();
-    </script>
+    // 初始化畫面
+    drawTracks();
+    drawHorses();
+  </script>
 </body>
 </html>
