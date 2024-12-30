@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Horse Racing Multiplayer</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #87CEEB;
+            overflow: hidden;
+        }
+        canvas {
+            border: 1px solid black;
+            background-color: white;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <!-- 選擇玩家 -->
+    <div id="playerSelection" style="margin-bottom: 20px;">
+        <button class="playerButton" data-player="0" style="background-color: hsl(0, 70%, 50%);">Player 1</button>
+        <button class="playerButton" data-player="1" style="background-color: hsl(50, 70%, 50%);">Player 2</button>
+        <button class="playerButton" data-player="2" style="background-color: hsl(100, 70%, 50%);">Player 3</button>
+        <button class="playerButton" data-player="3" style="background-color: hsl(150, 70%, 50%);">Player 4</button>
+    </div>
+    <!-- 畫布 -->
+    <canvas id="myCanvas" width="800" height="400"></canvas>
+    <!-- Restart 按鈕 -->
+    <button id="restartButton" style="display: none; margin-top: 20px;">Restart</button>
+
+    <script>
+        // 初始化 WebSocket
+        const socket = new WebSocket('ws://localhost:8080');
+
+        socket.onopen = () => {
+            console.log('Connected to the WebSocket server');
+        };
+
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === 'update') {
+                horses[data.player].x = data.position;
+                horses[data.player].speed = data.speed;
+            }
+        };
+
+        socket.onerror = (error) => {
+            console.error('WebSocket Error:', error);
+        };
+
+        socket.onclose = () => {
+            console.log('Disconnected from the WebSocket server');
+        };
+
+        const canvas = document.getElementById('myCanvas');
+        const ctx = canvas.getContext('2d');
+        const restartButton = document.getElementById('restartButton');
+        const playerButtons = document.querySelectorAll('.playerButton');
+        const trackCount = 4; // 玩家數量
+        const laneHeight = canvas.height / trackCount;
+        let gameOver = false; // 遊戲狀態
+        let controlledPlayer = null; // 被控制的玩家
+
+        const background = {
+            x: 0,
+            speed: 2
+        };
+
+        // 初始化賽馬數據
+        const horses = Array.from({ length: trackCount }, (_, i) => ({
+            x: 20, // 初始位置
+            y: i * laneHeight + laneHeight / 2, // 每條跑道的中心
+            color: `hsl(${i * 50}, 70%, 50%)`, // 每匹馬不同顏色
+            speed: Math.random() * 1 + 1, // 初始速度
+            image: new Image()
+        }));
+
+        horses.forEach((horse, index) => {
+            horse.image.src = `horse${index + 1}.png`; // 動態馬匹圖片（需提供圖片文件）
+        });
+
+        // 玩家選擇
+        playerButtons.forEach(button => {
+            button.addEventListener('click', () => {
+                controlledPlayer = parseInt(button.dataset.player, 10); // 獲取玩家編號
+                document.getElementById('playerSelection').style.display = 'none'; // 隱藏選擇
+                console.log(`Player ${controlledPlayer + 1} selected`);
+                gameLoop(); // 開始遊戲
+            });
+        });
+
+        // 點擊屏幕加速
+        canvas.addEventListener('click', () => {
+            if (controlledPlayer !== null) {
+                horses[controlledPlayer].speed = Math.min(horses[controlledPlayer].speed + 1, 5); // 限速
+                console.log(`Player ${controlledPlayer + 1} accelerated`);
+                socket.send(JSON.stringify({
+                    type: 'action',
+                    player: controlledPlayer,
+                    action: 'accelerate'
+                }));
+            }
+        });
+
+        // 繪製背景
+        function drawBackground() {
+            ctx.fillStyle = '#87CEEB'; // 天藍色背景
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#228B22'; // 草地顏色
+            ctx.fillRect(0, canvas.height - 50, canvas.width, 50);
+
+            // 模擬背景移動
+            background.x -= background.speed;
+            if (background.x <= -canvas.width) background.x = 0;
+
+            ctx.fillStyle = '#32CD32';
+            ctx.fillRect(background.x, canvas.height - 50, canvas.width, 50);
+            ctx.fillRect(background.x + canvas.width, canvas.height - 50, canvas.width, 50);
+        }
+
+        // 繪製賽馬
+        function drawHorses() {
+            horses.forEach(horse => {
+                ctx.drawImage(horse.image, horse.x, horse.y - 25, 50, 50); // 使用圖片表示馬匹
+            });
+        }
+
+        // 更新賽馬位置
+        function updateHorses() {
+            horses.forEach((horse, index) => {
+                if (!gameOver) {
+                    if (index !== controlledPlayer) {
+                        horse.speed = Math.max(1, horse.speed - 0.05); // 非玩家控制馬匹逐漸減速
+                    }
+                    horse.x += horse.speed; // 根據速度更新位置
+                    if (horse.x >= canvas.width - 50) {
+                        gameOver = true; // 設置遊戲結束
+                        announceWinner(horse); // 顯示獲勝馬匹
+                    }
+                }
+            });
+        }
+
+        // 宣布獲勝者
+        function announceWinner(horse) {
+            ctx.fillStyle = "black";
+            ctx.font = "30px Arial";
+            ctx.fillText(`Winner: ${horse.color}`, 10, 50);
+            restartButton.style.display = "block"; // 顯示重新開始按鈕
+        }
+
+        // 重置遊戲狀態
+        function resetGame() {
+            gameOver = false;
+            restartButton.style.display = "none";
+            horses.forEach(horse => {
+                horse.x = 20;
+                horse.speed = Math.random() * 1 + 1;
+            });
+            controlledPlayer = null;
+            document.getElementById('playerSelection').style.display = 'block'; // 顯示選擇
+            drawBackground();
+            drawHorses();
+        }
+
+        // 為 Restart 按鈕添加點擊事件
+        restartButton.addEventListener('click', resetGame);
+
+        // 遊戲循環
+        function gameLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // 清空畫布
+            drawBackground(); // 繪製背景
+            drawHorses(); // 繪製賽馬
+            updateHorses(); // 更新賽馬位置
+            if (!gameOver) {
+                requestAnimationFrame(gameLoop);
+            }
+        }
+
+        // 初始化畫面
+        drawBackground();
+        drawHorses();
+    </script>
+</body>
+</html>
