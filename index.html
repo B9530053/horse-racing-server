@@ -2,9 +2,11 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
+  <!-- 讓手機使用裝置實際寬度，避免畫面縮放 -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>馬匹閃避障礙競賽 - 虛擬搖桿版</title>
+  <title>馬匹閃避障礙競賽 - 虛擬搖桿 (手機自適應)</title>
   <style>
+    /* 讓 body 保持全螢幕，並避免預設滾動/縮放行為 */
     body {
       display: flex;
       flex-direction: column;
@@ -14,11 +16,26 @@
       background-color: #f4f4f4;
       touch-action: none; /* 避免瀏覽器預設的上下捲動、縮放行為干擾 */
     }
+
+    /* 外層容器，可幫助 Canvas 在手機上自適應 */
+    #gameContainer {
+      flex: 1;               /* 讓它佔滿剩餘空間 */
+      width: 100%;           /* 全寬 */
+      display: flex;
+      justify-content: center; 
+      align-items: center;
+    }
+
+    /* Canvas 設定：自適應寬度、高度自動、上限 800px */
     canvas {
       border: 1px solid black;
       background-color: white;
       touch-action: none; /* 重要：讓 Canvas 上能偵測 touchmove */
+      width: 100%;        /* 手機瀏覽器上撐滿螢幕寬 */
+      height: auto;       /* 維持比例縮放 */
+      max-width: 800px;   /* 在大螢幕時最多顯示 800px 寬 */
     }
+
     button {
       padding: 10px 20px;
       font-size: 16px;
@@ -30,7 +47,7 @@
   </style>
 </head>
 <body>
-  <!-- 玩家選擇 -->
+  <!-- 玩家選擇按鈕 -->
   <div id="playerSelection">
     <button class="playerButton" data-player="0" style="background-color: hsl(0, 70%, 50%);">玩家 1</button>
     <button class="playerButton" data-player="1" style="background-color: hsl(50, 70%, 50%);">玩家 2</button>
@@ -38,8 +55,11 @@
     <button class="playerButton" data-player="3" style="background-color: hsl(150, 70%, 50%);">玩家 4</button>
   </div>
 
-  <!-- 遊戲畫布 -->
-  <canvas id="myCanvas" width="800" height="400"></canvas>
+  <!-- 外層容器，包住 Canvas，避免在手機上畫面超框 -->
+  <div id="gameContainer">
+    <!-- 遊戲畫布 (預設 800x400 只是原始像素大小，會被 CSS 覆蓋) -->
+    <canvas id="myCanvas" width="800" height="400"></canvas>
+  </div>
 
   <!-- 重新開始按鈕 -->
   <button id="restartButton" style="display: none; margin-top: 20px;">重新開始</button>
@@ -88,9 +108,9 @@
     const HORSE_RADIUS = 15; // 馬匹圓形半徑
 
     // 初始障礙物參數 (會隨難度調整)
-    let OBSTACLE_SIZE = 20;   // 障礙物寬度與高度
-    let OBSTACLE_SPEED_MIN = 2; // 障礙物最小速度
-    let OBSTACLE_SPEED_MAX = 6; // 障礙物最大速度
+    let OBSTACLE_SIZE = 20;       // 障礙物寬度與高度
+    let OBSTACLE_SPEED_MIN = 2;   // 障礙物最小速度
+    let OBSTACLE_SPEED_MAX = 6;   // 障礙物最大速度
     let OBSTACLE_SPAWN_RATE = 0.01; // 初始障礙物生成機率 (1%)
 
     // 遊戲控制旗標
@@ -177,7 +197,7 @@
         ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
       });
 
-      // 搖桿 - 畫出中心與手指位置 (以粉紅色呈現)
+      // 搖桿 - 畫出中心與手指位置 (粉紅色)
       if (joystickActive && joystickCenter) {
         ctx.strokeStyle = 'magenta';
         ctx.beginPath();
@@ -311,7 +331,7 @@
       button.addEventListener('click', () => {
         controlledPlayer = parseInt(button.dataset.player, 10);
         document.getElementById('playerSelection').style.display = 'none';
-        // 開始遊戲迴圈
+        // 開始遊戲主迴圈
         requestAnimationFrame(gameLoop);
       });
     });
@@ -335,7 +355,7 @@
         OBSTACLE_SPEED_MAX += 0.5;
         OBSTACLE_SPAWN_RATE += 0.002;
 
-        // 設一些上限
+        // 設一些上限，避免難度過大
         if (OBSTACLE_SPEED_MAX > 12) OBSTACLE_SPEED_MAX = 12;
         if (OBSTACLE_SPAWN_RATE > 0.2) OBSTACLE_SPAWN_RATE = 0.2;
 
@@ -414,9 +434,6 @@
       }
     });
 
-    // 若需要支援多手指（只要第一指是搖桿），其餘手指可作其他功能：
-    // 可在 touchstart/touchend 中精細處理多指情境，這裡示範簡單單指。
-
     /********************************************
      * H. 遊戲主迴圈                            *
      ********************************************/
@@ -426,7 +443,7 @@
       drawTracks();
       drawHorses();
       drawObstacles();
-      debugCollisionAreas(); // 可視化碰撞區域（除錯用）
+      debugCollisionAreas(); // 可視化碰撞範圍（除錯用）
 
       if (!gameOver) {
         // 難度更新
@@ -440,11 +457,8 @@
           horse.y += horse.vy;
 
           // 邊界限制：不可超出該跑道
-          // 跑道上邊界
           const topLimit = laneHeight * controlledPlayer + HORSE_RADIUS;
-          // 跑道下邊界
           const bottomLimit = laneHeight * (controlledPlayer + 1) - HORSE_RADIUS;
-          // 左右邊界
           if (horse.x < HORSE_RADIUS) horse.x = HORSE_RADIUS;
           if (horse.x > canvas.width - HORSE_RADIUS) horse.x = canvas.width - HORSE_RADIUS;
           if (horse.y < topLimit) horse.y = topLimit;
